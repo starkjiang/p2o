@@ -46,7 +46,7 @@ p2o/
 ### 1. Install
 
 ```bash
-git clone https://github.com/your-username/p2o.git
+git clone https://github.com/starkjiang/p2o.git
 cd p2o
 pip install -e .
 # or: pip install -r requirements.txt
