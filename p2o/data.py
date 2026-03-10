@@ -67,10 +67,10 @@ def _tok_pair(
     full = (p_ids + r_ids)[:max_length]
     pad  = max_length - len(full)
     return {
-        "input_ids":      [tokenizer.pad_token_id] * pad + full,
+        "input_ids": [tokenizer.pad_token_id] * pad + full,
         "attention_mask": [0] * pad + [1] * len(full),
         "response_start": max(pad + len(p_ids), 1),
-        "n_resp":         len(r_ids),
+        "n_resp": len(r_ids),
     }
 
 
@@ -108,14 +108,14 @@ def _load_hh(
     Each row has 'chosen' and 'rejected' as full conversation strings.
     A last-occurrence split on '\\n\\nAssistant:' separates prompt from response.
     """
-    raw     = load_dataset(cfg.dataset_hh, split="train")
-    data:   List[Dict] = []
+    raw = load_dataset(cfg.dataset_hh, split="train")
+    data: List[Dict] = []
     skipped = 0
 
     for row in tqdm(raw, desc=f"hh-rlhf[{tag}]", leave=False):
         if len(data) >= n:
             break
-        chosen   = row.get("chosen",   "")
+        chosen = row.get("chosen",   "")
         rejected = row.get("rejected", "")
         if not chosen or not rejected:
             continue
@@ -154,21 +154,21 @@ def _load_shp(
     Fields used: history (prompt), human_ref_A / human_ref_B (candidates),
     labels (1 = A preferred, 0 = B preferred).
     """
-    raw     = load_dataset(cfg.dataset_shp, split="train")
-    data:   List[Dict] = []
+    raw = load_dataset(cfg.dataset_shp, split="train")
+    data: List[Dict] = []
     skipped = 0
 
     for row in tqdm(raw, desc=f"SHP[{tag}]", leave=False):
         if len(data) >= n:
             break
         prompt = row.get("history", "").strip()
-        ref_a  = row.get("human_ref_A", "").strip()
-        ref_b  = row.get("human_ref_B", "").strip()
-        label  = row.get("labels", 1)           # 1 = A preferred
+        ref_a = row.get("human_ref_A", "").strip()
+        ref_b = row.get("human_ref_B", "").strip()
+        label = row.get("labels", 1)           # 1 = A preferred
         if not prompt or not ref_a or not ref_b:
             continue
 
-        chosen   = ref_a if label == 1 else ref_b
+        chosen = ref_a if label == 1 else ref_b
         rejected = ref_b if label == 1 else ref_a
 
         tw = _tok_pair(tokenizer, prompt, chosen,   cfg.max_length, cfg.max_prompt_length)
@@ -205,8 +205,8 @@ def _load_uf(
     Rejected = completion with the lowest score.
     Pairs where best == worst score are skipped.
     """
-    raw     = load_dataset(cfg.dataset_uf, split="train")
-    data:   List[Dict] = []
+    raw = load_dataset(cfg.dataset_uf, split="train")
+    data: List[Dict] = []
     skipped = 0
 
     def _score(c: Dict) -> float:
@@ -222,7 +222,7 @@ def _load_uf(
     for row in tqdm(raw, desc=f"UF[{tag}]", leave=False):
         if len(data) >= n:
             break
-        prompt      = row.get("instruction", "").strip()
+        prompt = row.get("instruction", "").strip()
         completions = row.get("completions", [])
         if not prompt or len(completions) < 2:
             continue
@@ -232,7 +232,7 @@ def _load_uf(
         if len(scored) < 2:
             continue
 
-        best  = max(scored, key=lambda x: x[0])
+        best = max(scored, key=lambda x: x[0])
         worst = min(scored, key=lambda x: x[0])
         if best[0] == worst[0]:
             continue
@@ -273,24 +273,24 @@ def build_loaders(cfg: Config, tokenizer) -> Tuple[
 
     print(f"\nLoading HH-RLHF  ({N_TR} train + {N_EV} eval)...")
     hh_train = _load_hh(N_TR, skip=0,    tag="hh-train", cfg=cfg, tokenizer=tokenizer)
-    hh_eval  = _load_hh(N_EV, skip=N_TR, tag="hh-eval",  cfg=cfg, tokenizer=tokenizer)
+    hh_eval = _load_hh(N_EV, skip=N_TR, tag="hh-eval",  cfg=cfg, tokenizer=tokenizer)
 
     print(f"Loading SHP      ({N_TR} train + {N_EV} eval)...")
     shp_train = _load_shp(N_TR, skip=0,    tag="shp-train", cfg=cfg, tokenizer=tokenizer)
-    shp_eval  = _load_shp(N_EV, skip=N_TR, tag="shp-eval",  cfg=cfg, tokenizer=tokenizer)
+    shp_eval = _load_shp(N_EV, skip=N_TR, tag="shp-eval",  cfg=cfg, tokenizer=tokenizer)
 
     print(f"Loading UltraFeedback ({N_TR} train + {N_EV} eval)...")
     uf_train = _load_uf(N_TR, skip=0,    tag="uf-train", cfg=cfg, tokenizer=tokenizer)
-    uf_eval  = _load_uf(N_EV, skip=N_TR, tag="uf-eval",  cfg=cfg, tokenizer=tokenizer)
+    uf_eval = _load_uf(N_EV, skip=N_TR, tag="uf-eval",  cfg=cfg, tokenizer=tokenizer)
 
     assert len(hh_eval)  > 0, "HH eval split is empty"
     assert len(shp_eval) > 0, "SHP eval split is empty"
     assert len(uf_eval)  > 0, "UF eval split is empty"
 
     print(f"\nDataset sizes:")
-    print(f"  HH  : {len(hh_train):4d} train | {len(hh_eval):3d} eval")
-    print(f"  SHP : {len(shp_train):4d} train | {len(shp_eval):3d} eval")
-    print(f"  UF  : {len(uf_train):4d} train | {len(uf_eval):3d} eval")
+    print(f"HH  : {len(hh_train):4d} train | {len(hh_eval):3d} eval")
+    print(f"SHP : {len(shp_train):4d} train | {len(shp_eval):3d} eval")
+    print(f"UF  : {len(uf_train):4d} train | {len(uf_eval):3d} eval")
 
     def _train_loader(dataset):
         return DataLoader(
