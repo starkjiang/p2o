@@ -355,7 +355,7 @@ def evaluate(policy, ref_model, loader, device, beta: float) -> Dict:
         h_r = beta * (s_pi_r - s_rf_r)
         acc += (h_c - h_r > 0).float().sum().item()
         mg_s += (h_c - h_r).sum().item()
-        kl_s += (m_pi_c - m_rf_c).sum().item()
+        kl_s += (m_pi_c - m_rf_c).sum().abs().item()
         n += B
 
     policy.train()
