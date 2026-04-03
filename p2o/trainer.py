@@ -1,20 +1,21 @@
 """
 trainer.py — Training loop for all five preference-optimisation methods.
-
-Training order within each epoch: HH-RLHF → SHP → UltraFeedback.
+ 
+Training order within each epoch: datasets are visited sequentially in the
+order they appear in the loaders dict (e.g. HH → SHP → UF → ...).
 Each dataset's batches are domain-pure (no cross-dataset mixing).
 The policy carries state across datasets within an epoch.
-
+ 
 Public API
 ----------
-train_model(method, ref_model, train_loaders, eval_loaders, cfg, device)
+train_model(method, ref_model, loaders, cfg, device)
     -> history dict
-
+ 
 The returned history dict contains:
   batch_x, eval_batch_x — x-axis indices for plots
   loss, reward_accuracy, ...  — per-log-slot training metrics
-  eval_hh_*, eval_shp_*, eval_uf_* — per-eval-slot held-out metrics
-  final_hh, final_shp, final_uf — end-of-training eval dicts
+  eval_{ds}_accuracy, eval_{ds}_margin, eval_{ds}_kl — per-dataset eval
+  final_{ds} — end-of-training eval dicts for each dataset
   training_time — wall-clock seconds
 """
 
@@ -40,11 +41,11 @@ VALID_METHODS = ("dpo", "ipo", "kto", "p2o", "pkto")
 
 # History initialisation.
 
-def make_history(total_batches: int, log_every: int, eval_every: int) -> Dict:
+def make_history(total_batches: int, log_every: int, eval_every: int, dataset_names: list) -> Dict:
     n_log  = max(1, total_batches // log_every)
     n_eval = max(1, total_batches // eval_every)
     nan = lambda n: [float("nan")] * n
-    return dict(
+    hist = dict(
         batch_x = [log_every  * (i + 1) for i in range(n_log)],
         eval_batch_x = [eval_every * (i + 1) for i in range(n_eval)],
         # Training metrics (global batch index).
@@ -55,19 +56,12 @@ def make_history(total_batches: int, log_every: int, eval_every: int) -> Dict:
         grad_norm = nan(n_log),
         chosen_reward = nan(n_log),
         rejected_reward = nan(n_log),
-        # Eval metrics — Eval-A HH-RLHF.
-        eval_hh_accuracy = nan(n_eval),
-        eval_hh_margin = nan(n_eval),
-        eval_hh_kl = nan(n_eval),
-        # Eval metrics — Eval-B SHP.
-        eval_shp_accuracy = nan(n_eval),
-        eval_shp_margin = nan(n_eval),
-        eval_shp_kl = nan(n_eval),
-        # Eval metrics — Eval-C UltraFeedback.
-        eval_uf_accuracy = nan(n_eval),
-        eval_uf_margin = nan(n_eval),
-        eval_uf_kl = nan(n_eval),
     )
+    for ds in dataset_names:
+        hist[f"eval_{ds}_accuracy"] = nan(n_eval)
+        hist[f"eval_{ds}_margin"] = nan(n_eval)
+        hist[f"eval_{ds}_kl"] = nan(n_eval)
+    return hist
 
 
 # Single optimisation step.
@@ -169,40 +163,42 @@ def _one_step(
 def train_model(
     method: str,
     ref_model,
-    train_loader_hh: DataLoader,
-    train_loader_shp: DataLoader,
-    train_loader_uf: DataLoader,
-    eval_loader_hh: DataLoader,
-    eval_loader_shp: DataLoader,
-    eval_loader_uf: DataLoader,
+    loaders: Dict[str, Tuple[DataLoader, DataLoader]],
     cfg: Config,
     device,
 ) -> Dict:
     """
-    Train *method* for cfg.n_epochs epochs, visiting datasets in order:
-        HH-RLHF → SHP → UltraFeedback  (within every epoch)
-
-    Eval is run against all three held-out loaders every cfg.eval_every
-    global batches and once more at the end of training.
-
+    Train *method* for cfg.n_epochs epochs, visiting datasets sequentially
+    in the order they appear in *loaders*.
+ 
+    Parameters
+    ----------
+    method : one of VALID_METHODS
+    ref_model : frozen reference model
+    loaders : dict mapping dataset short name -> (train_loader, eval_loader)
+    cfg : Config
+    device : torch device
+ 
     Returns the history dict populated with training and eval metrics.
     """
     assert method in VALID_METHODS, f"Unknown method '{method}'"
 
-    batches_ds = min(
-        len(train_loader_hh),
-        len(train_loader_shp),
-        len(train_loader_uf),
-    )
-    batches_ep  = batches_ds * 3
+    dataset_names = list(loaders.keys())
+    train_loaders = {k: v[0] for k, v in loaders.items()}
+    eval_loaders  = {k: v[1] for k, v in loaders.items()}
+ 
+    batches_ds = min(len(tl) for tl in train_loaders.values())
+    n_ds = len(dataset_names)
+    batches_ep  = batches_ds * n_ds
     tot_batches = batches_ep * cfg.n_epochs
-
+ 
+    ds_display = " → ".join(d.upper() for d in dataset_names)
     print(f"\n{'═' * 60}")
-    print(f"Training: {method.upper()}  (sequential: HH → SHP → UF)")
-    print(f"{batches_ds} batches/ds × 3 ds × {cfg.n_epochs} epochs = {tot_batches} total")
+    print(f"Training: {method.upper()}  (sequential: {ds_display})")
+    print(f"{batches_ds} batches/ds × {n_ds} ds × {cfg.n_epochs} epochs = {tot_batches} total")
     print(f"{'═' * 60}")
-
-    hist = make_history(tot_batches, cfg.log_every, cfg.eval_every)
+ 
+    hist = make_history(tot_batches, cfg.log_every, cfg.eval_every, dataset_names)
 
     policy = (
         AutoModelForCausalLM.from_pretrained(cfg.model_name)
@@ -229,17 +225,14 @@ def train_model(
     batch_idx = 0   # global counter across all datasets and epochs
     t0 = time.time()
 
-    DS_LOADERS = [
-        ("HH",  train_loader_hh),
-        ("SHP", train_loader_shp),
-        ("UF",  train_loader_uf),
-    ]
+    DS_LOADERS = [(ds, train_loaders[ds]) for ds in dataset_names]
+
 
     for epoch in range(cfg.n_epochs):
         for ds_name, ds_loader in DS_LOADERS:
             for batch in tqdm(
                 ds_loader,
-                desc=f"Ep {epoch + 1}/{cfg.n_epochs} [{method.upper()}|{ds_name}]",
+                desc=f"Ep {epoch + 1}/{cfg.n_epochs} [{method.upper()}|{ds_name.upper()}]",
                 leave=False,
             ):
                 batch_idx += 1
@@ -276,56 +269,38 @@ def train_model(
                     run = {k: 0.0 for k in RUN_KEYS}
                     run_n = 0
 
-                # ── Eval slot — all three held-out sets ───────────────
+                # ── Eval slot — all held-out sets ───────────────────
                 if batch_idx % cfg.eval_every == 0:
                     slot = batch_idx // cfg.eval_every - 1
-                    ev_hh = evaluate(policy, ref_model, eval_loader_hh,  device, cfg.beta)
-                    ev_shp = evaluate(policy, ref_model, eval_loader_shp, device, cfg.beta)
-                    ev_uf = evaluate(policy, ref_model, eval_loader_uf,  device, cfg.beta)
-                    if 0 <= slot < len(hist["eval_hh_kl"]):
-                        hist["eval_hh_accuracy"][slot]  = ev_hh["reward_accuracy"]
-                        hist["eval_hh_margin"][slot]    = ev_hh["reward_margin"]
-                        hist["eval_hh_kl"][slot]        = ev_hh["kl"]
-                        hist["eval_shp_accuracy"][slot] = ev_shp["reward_accuracy"]
-                        hist["eval_shp_margin"][slot]   = ev_shp["reward_margin"]
-                        hist["eval_shp_kl"][slot]       = ev_shp["kl"]
-                        hist["eval_uf_accuracy"][slot]  = ev_uf["reward_accuracy"]
-                        hist["eval_uf_margin"][slot]    = ev_uf["reward_margin"]
-                        hist["eval_uf_kl"][slot]        = ev_uf["kl"]
+                    eval_parts = []
+                    for ev_ds, ev_loader in eval_loaders.items():
+                        ev = evaluate(policy, ref_model, ev_loader, device, cfg.beta)
+                        if 0 <= slot < len(hist[f"eval_{ev_ds}_accuracy"]):
+                            hist[f"eval_{ev_ds}_accuracy"][slot] = ev["reward_accuracy"]
+                            hist[f"eval_{ev_ds}_margin"][slot]   = ev["reward_margin"]
+                            hist[f"eval_{ev_ds}_kl"][slot]       = ev["kl"]
+                        eval_parts.append(
+                            f"{ev_ds.upper()} acc={ev['reward_accuracy']:.3f} "
+                            f"mg={ev['reward_margin']:.4f} KL={ev['kl']:.5f}"
+                        )
                     print(
-                        f"  [{method.upper()}] EVAL b={batch_idx:4d} [in {ds_name}] | "
-                        f"HH  acc={ev_hh['reward_accuracy']:.3f} "
-                        f"mg={ev_hh['reward_margin']:.4f} KL={ev_hh['kl']:.5f} | "
-                        f"SHP acc={ev_shp['reward_accuracy']:.3f} "
-                        f"mg={ev_shp['reward_margin']:.4f} KL={ev_shp['kl']:.5f} | "
-                        f"UF  acc={ev_uf['reward_accuracy']:.3f} "
-                        f"mg={ev_uf['reward_margin']:.4f} KL={ev_uf['kl']:.5f}"
+                        f"  [{method.upper()}] EVAL b={batch_idx:4d} [in {ds_name.upper()}] | "
+                        + " | ".join(eval_parts)
                     )
 
     # Final eval after all epochs are done.
     print("  Final evaluation...")
-    final_hh = evaluate(policy, ref_model, eval_loader_hh,  device, cfg.beta)
-    final_shp = evaluate(policy, ref_model, eval_loader_shp, device, cfg.beta)
-    final_uf = evaluate(policy, ref_model, eval_loader_uf,  device, cfg.beta)
-
-    print(
-        f"FINAL HH: acc={final_hh['reward_accuracy']:.3f}  "
-        f"mg={final_hh['reward_margin']:.4f}  KL={final_hh['kl']:.5f}"
-    )
-    print(
-        f"FINAL SHP: acc={final_shp['reward_accuracy']:.3f}  "
-        f"mg={final_shp['reward_margin']:.4f}  KL={final_shp['kl']:.5f}"
-    )
-    print(
-        f"FINAL UF: acc={final_uf['reward_accuracy']:.3f}  "
-        f"mg={final_uf['reward_margin']:.4f}  KL={final_uf['kl']:.5f}"
-    )
-
-    hist["final_hh"] = final_hh
-    hist["final_shp"] = final_shp
-    hist["final_uf"] = final_uf
+    for ds, ev_loader in eval_loaders.items():
+        final = evaluate(policy, ref_model, ev_loader, device, cfg.beta)
+        hist[f"final_{ds}"] = final
+        print(
+            f"FINAL {ds.upper()}: acc={final['reward_accuracy']:.3f}  "
+            f"mg={final['reward_margin']:.4f}  KL={final['kl']:.5f}"
+        )
+ 
     hist["training_time"] = time.time() - t0
-
+    hist["dataset_names"] = dataset_names
+ 
     print(
         f"Time: {hist['training_time']:.0f}s "
         f"({hist['training_time'] / 60:.1f} min)"
