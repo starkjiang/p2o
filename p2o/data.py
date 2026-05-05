@@ -1,10 +1,8 @@
 """
 data.py — Dataset loading and tokenisation.
 
-Six preference datasets, each with a separate train split and a
-held-out eval split.  Training loaders are intentionally NOT pooled:
-the training loop visits datasets sequentially within every epoch
-so gradient signal is always domain-pure.
+Three preference datasets, each with a separate train split and a held-out eval split.  Training loaders are intentionally NOT pooled:
+the training loop visits datasets sequentially within every epoch so gradient signal is always domain-pure.
 
 """
 
@@ -20,8 +18,7 @@ from tqdm.auto import tqdm
 from p2o.config import Config
 
 
-# Tokenization helper functions.
-
+# Tokenization helper functions
 def _split_hh(text: str) -> Tuple[str, str]:
     """Split a full hh-rlhf conversation string into (prompt, response)."""
     marker = "\n\nAssistant:"
@@ -41,7 +38,6 @@ def _tok_pair(
 ) -> Optional[Dict]:
     """
     Tokenise a (prompt, response) pair into a left-padded fixed-length tensor dict.
-
     Returns None if either side is too short to be useful (response < 4 tokens).
     """
     p_ids = tokenizer(
@@ -61,7 +57,7 @@ def _tok_pair(
         return None
 
     full = (p_ids + r_ids)[:max_length]
-    pad  = max_length - len(full)
+    pad = max_length - len(full)
     return {
         "input_ids": [tokenizer.pad_token_id] * pad + full,
         "attention_mask": [0] * pad + [1] * len(full),
@@ -88,8 +84,7 @@ def collate(batch: List[Dict]) -> Dict:
     return out
 
 
-# Dataset loaders.
-
+# Dataset loaders
 def _load_hh(
     n: int,
     skip: int,
@@ -100,7 +95,6 @@ def _load_hh(
     """
     Stream Anthropic/hh-rlhf train split, skip the first *skip* valid pairs,
     then collect *n* valid pairs.
-
     Each row has 'chosen' and 'rejected' as full conversation strings.
     A last-occurrence split on '\\n\\nAssistant:' separates prompt from response.
     """
@@ -111,7 +105,7 @@ def _load_hh(
     for row in tqdm(raw, desc=f"hh-rlhf[{tag}]", leave=False):
         if len(data) >= n:
             break
-        chosen = row.get("chosen",   "")
+        chosen = row.get("chosen", "")
         rejected = row.get("rejected", "")
         if not chosen or not rejected:
             continue
@@ -128,59 +122,13 @@ def _load_hh(
             skipped += 1
             continue
 
-        data.append({
-            **{f"c_{k}": v for k, v in _tensorise(tw).items()},
-            **{f"r_{k}": v for k, v in _tensorise(tl).items()},
-            "source": tag,
-        })
-
-    return data
-
-
-def _load_shp(
-    n: int,
-    skip: int,
-    tag: str,
-    cfg: Config,
-    tokenizer,
-) -> List[Dict]:
-    """
-    Stream stanfordnlp/SHP train split.
-
-    Fields used: history (prompt), human_ref_A / human_ref_B (candidates),
-    labels (1 = A preferred, 0 = B preferred).
-    """
-    raw = load_dataset(cfg.dataset_shp, split="train")
-    data: List[Dict] = []
-    skipped = 0
-
-    for row in tqdm(raw, desc=f"SHP[{tag}]", leave=False):
-        if len(data) >= n:
-            break
-        prompt = row.get("history", "").strip()
-        ref_a = row.get("human_ref_A", "").strip()
-        ref_b = row.get("human_ref_B", "").strip()
-        label = row.get("labels", 1)           # 1 = A preferred
-        if not prompt or not ref_a or not ref_b:
-            continue
-
-        chosen = ref_a if label == 1 else ref_b
-        rejected = ref_b if label == 1 else ref_a
-
-        tw = _tok_pair(tokenizer, prompt, chosen,   cfg.max_length, cfg.max_prompt_length)
-        tl = _tok_pair(tokenizer, prompt, rejected, cfg.max_length, cfg.max_prompt_length)
-        if tw is None or tl is None:
-            continue
-
-        if skipped < skip:
-            skipped += 1
-            continue
-
-        data.append({
-            **{f"c_{k}": v for k, v in _tensorise(tw).items()},
-            **{f"r_{k}": v for k, v in _tensorise(tl).items()},
-            "source": tag,
-        })
+        data.append(
+            {
+                **{f"c_{k}": v for k, v in _tensorise(tw).items()},
+                **{f"r_{k}": v for k, v in _tensorise(tl).items()},
+                "source": tag,
+            }
+        )
 
     return data
 
@@ -195,8 +143,7 @@ def _load_uf(
     """
     Stream openbmb/UltraFeedback train split.
 
-    Schema: instruction (prompt), completions (list of dicts with keys
-    'response' and 'overall_score' or 'score').
+    Schema: instruction (prompt), completions (list of dicts with keys 'response' and 'overall_score' or 'score').
     Chosen  = completion with the highest score.
     Rejected = completion with the lowest score.
     Pairs where best == worst score are skipped.
@@ -233,8 +180,12 @@ def _load_uf(
         if best[0] == worst[0]:
             continue
 
-        tw = _tok_pair(tokenizer, prompt, best[1],  cfg.max_length, cfg.max_prompt_length)
-        tl = _tok_pair(tokenizer, prompt, worst[1], cfg.max_length, cfg.max_prompt_length)
+        tw = _tok_pair(
+            tokenizer, prompt, best[1], cfg.max_length, cfg.max_prompt_length
+        )
+        tl = _tok_pair(
+            tokenizer, prompt, worst[1], cfg.max_length, cfg.max_prompt_length
+        )
         if tw is None or tl is None:
             continue
 
@@ -242,11 +193,13 @@ def _load_uf(
             skipped += 1
             continue
 
-        data.append({
-            **{f"c_{k}": v for k, v in _tensorise(tw).items()},
-            **{f"r_{k}": v for k, v in _tensorise(tl).items()},
-            "source": tag,
-        })
+        data.append(
+            {
+                **{f"c_{k}": v for k, v in _tensorise(tw).items()},
+                **{f"r_{k}": v for k, v in _tensorise(tl).items()},
+                "source": tag,
+            }
+        )
 
     return data
 
@@ -265,131 +218,45 @@ def _load_orca(
     raw = load_dataset(cfg.dataset_orca, split="train")
     data: List[Dict] = []
     skipped = 0
- 
+
     for row in tqdm(raw, desc=f"Orca[{tag}]", leave=False):
         if len(data) >= n:
             break
-        prompt   = row.get("question", "").strip()
-        chosen   = row.get("chosen", "").strip()
+        prompt = row.get("question", "").strip()
+        chosen = row.get("chosen", "").strip()
         rejected = row.get("rejected", "").strip()
         if not prompt or not chosen or not rejected:
             continue
- 
-        tw = _tok_pair(tokenizer, prompt, chosen,   cfg.max_length, cfg.max_prompt_length)
-        tl = _tok_pair(tokenizer, prompt, rejected, cfg.max_length, cfg.max_prompt_length)
+
+        tw = _tok_pair(tokenizer, prompt, chosen, cfg.max_length, cfg.max_prompt_length)
+        tl = _tok_pair(
+            tokenizer, prompt, rejected, cfg.max_length, cfg.max_prompt_length
+        )
         if tw is None or tl is None:
             continue
- 
+
         if skipped < skip:
             skipped += 1
             continue
- 
-        data.append({
-            **{f"c_{k}": v for k, v in _tensorise(tw).items()},
-            **{f"r_{k}": v for k, v in _tensorise(tl).items()},
-            "source": tag,
-        })
- 
+
+        data.append(
+            {
+                **{f"c_{k}": v for k, v in _tensorise(tw).items()},
+                **{f"r_{k}": v for k, v in _tensorise(tl).items()},
+                "source": tag,
+            }
+        )
+
     return data
- 
- 
-def _load_pku(
-    n: int,
-    skip: int,
-    tag: str,
-    cfg: Config,
-    tokenizer,
-) -> List[Dict]:
-    """
-    Stream PKU-Alignment/PKU-SafeRLHF train split.
-    Fields: prompt, response_0, response_1, better_response_id (0 or 1).
-    """
-    raw = load_dataset(cfg.dataset_pku, split="train")
-    data: List[Dict] = []
-    skipped = 0
- 
-    for row in tqdm(raw, desc=f"PKU[{tag}]", leave=False):
-        if len(data) >= n:
-            break
-        prompt = row.get("prompt", "").strip()
-        r0 = row.get("response_0", "").strip()
-        r1 = row.get("response_1", "").strip()
-        better = row.get("better_response_id", None)
-        if not prompt or not r0 or not r1 or better is None:
-            continue
- 
-        chosen   = r0 if better == 0 else r1
-        rejected = r1 if better == 0 else r0
- 
-        tw = _tok_pair(tokenizer, prompt, chosen,   cfg.max_length, cfg.max_prompt_length)
-        tl = _tok_pair(tokenizer, prompt, rejected, cfg.max_length, cfg.max_prompt_length)
-        if tw is None or tl is None:
-            continue
- 
-        if skipped < skip:
-            skipped += 1
-            continue
- 
-        data.append({
-            **{f"c_{k}": v for k, v in _tensorise(tw).items()},
-            **{f"r_{k}": v for k, v in _tensorise(tl).items()},
-            "source": tag,
-        })
- 
-    return data
- 
- 
-def _load_ufb(
-    n: int,
-    skip: int,
-    tag: str,
-    cfg: Config,
-    tokenizer,
-) -> List[Dict]:
-    """
-    Stream argilla/ultrafeedback-binarized-preferences train split.
-    Fields: instruction (prompt), chosen_response (str), rejected_response (str).
-    """
-    raw = load_dataset(cfg.dataset_ufb, split="train")
-    data: List[Dict] = []
-    skipped = 0
- 
-    for row in tqdm(raw, desc=f"UFB[{tag}]", leave=False):
-        if len(data) >= n:
-            break
-        prompt   = row.get("instruction", "").strip()
-        chosen   = row.get("chosen_response", "").strip()
-        rejected = row.get("rejected_response", "").strip()
-        if not prompt or not chosen or not rejected:
-            continue
- 
-        tw = _tok_pair(tokenizer, prompt, chosen,   cfg.max_length, cfg.max_prompt_length)
-        tl = _tok_pair(tokenizer, prompt, rejected, cfg.max_length, cfg.max_prompt_length)
-        if tw is None or tl is None:
-            continue
- 
-        if skipped < skip:
-            skipped += 1
-            continue
- 
-        data.append({
-            **{f"c_{k}": v for k, v in _tensorise(tw).items()},
-            **{f"r_{k}": v for k, v in _tensorise(tl).items()},
-            "source": tag,
-        })
- 
-    return data
+
 
 # Maps short name -> (loader_func, cfg_attr_for_hf_path, display_label)
 DATASET_REGISTRY: Dict[str, Tuple] = {
-  "hh":   (_load_hh,   "dataset_hh",   "HH-RLHF"),
-  "shp":  (_load_shp,  "dataset_shp",  "SHP"),
-  "uf":   (_load_uf,   "dataset_uf",   "UltraFeedback"),
-  "orca": (_load_orca, "dataset_orca", "Orca DPO"),
-  "pku":  (_load_pku,  "dataset_pku",  "PKU-SafeRLHF"),
-  "ufb":  (_load_ufb,  "dataset_ufb",  "UF-Binarized"),
+    "hh": (_load_hh, "dataset_hh", "HH-RLHF"),
+    "uf": (_load_uf, "dataset_uf", "UltraFeedback"),
+    "orca": (_load_orca, "dataset_orca", "Orca DPO"),
 }
- 
+
 VALID_DATASETS = tuple(DATASET_REGISTRY.keys())
 
 
@@ -403,29 +270,29 @@ def build_loaders(
 ) -> Dict[str, Tuple[DataLoader, DataLoader]]:
     """
     Load datasets and return DataLoaders.
- 
+
     Parameters
     ----------
     cfg : Config
     tokenizer : PreTrainedTokenizer
-    dataset_names : list of short names (e.g. ["hh", "shp", "uf", "orca"]).
-                    Defaults to ["hh", "shp", "uf"] if None.
- 
+    dataset_names : list of short names (e.g. ["hh", "uf", "orca"]).
+                    Defaults to ["hh", "uf", "orca"] if None.
+
     Returns
     -------
     dict mapping dataset short name -> (train_loader, eval_loader)
     """
     if dataset_names is None:
-        dataset_names = ["hh", "shp", "uf"]
- 
+        dataset_names = ["hh", "uf", "orca"]
+
     for name in dataset_names:
-        assert name in DATASET_REGISTRY, (
-            f"Unknown dataset '{name}'. Valid: {VALID_DATASETS}"
-        )
- 
+        assert (
+            name in DATASET_REGISTRY
+        ), f"Unknown dataset '{name}'. Valid: {VALID_DATASETS}"
+
     N_TR = cfg.n_train_per_ds
     N_EV = cfg.n_eval_per_ds
- 
+
     def _train_loader(dataset):
         return DataLoader(
             dataset,
@@ -434,7 +301,7 @@ def build_loaders(
             collate_fn=collate,
             drop_last=True,
         )
- 
+
     def _eval_loader(dataset):
         return DataLoader(
             dataset,
@@ -443,26 +310,34 @@ def build_loaders(
             collate_fn=collate,
             drop_last=False,
         )
- 
+
     loaders: Dict[str, Tuple[DataLoader, DataLoader]] = {}
- 
+
     for ds_name in dataset_names:
         loader_fn, cfg_attr, display = DATASET_REGISTRY[ds_name]
         hf_path = getattr(cfg, cfg_attr)
- 
+
         print(f"\nLoading {display} ({N_TR} train + {N_EV} eval) [{hf_path}]...")
         train_data = loader_fn(
-            N_TR, skip=0, tag=f"{ds_name}-train", cfg=cfg, tokenizer=tokenizer,
+            N_TR,
+            skip=0,
+            tag=f"{ds_name}-train",
+            cfg=cfg,
+            tokenizer=tokenizer,
         )
         eval_data = loader_fn(
-            N_EV, skip=N_TR, tag=f"{ds_name}-eval", cfg=cfg, tokenizer=tokenizer,
+            N_EV,
+            skip=N_TR,
+            tag=f"{ds_name}-eval",
+            cfg=cfg,
+            tokenizer=tokenizer,
         )
         assert len(train_data) > 0, f"{display} train split is empty"
         assert len(eval_data) > 0, f"{display} eval split is empty"
- 
+
         print(f"  {display}: {len(train_data):4d} train | {len(eval_data):3d} eval")
- 
+
         loaders[ds_name] = (_train_loader(train_data), _eval_loader(eval_data))
- 
+
     print(f"\nDatasets loaded: {', '.join(dataset_names)}")
     return loaders

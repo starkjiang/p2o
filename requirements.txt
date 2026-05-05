@@ -1,5 +1,5 @@
 torch>=2.0.0
-transformers==4.40.0
+transformers>=4.45.0
 datasets==2.19.0
 accelerate==0.29.3
 numpy>=1.24

@@ -4,14 +4,6 @@ losses.py — All preference-optimisation loss functions and the shared evaluato
 Every loss receives (policy, ref_model, batch, ...) and returns (loss, metrics_dict).
 The metrics dict always contains at least:
   loss, reward_accuracy, reward_margin, chosen_reward, rejected_reward, clip_frac
-
-Algorithm references
---------------------
-DPO  : Rafailov et al. 2023  — https://arxiv.org/abs/2305.18290
-IPO  : Azar et al. 2023      — https://arxiv.org/abs/2310.12036
-KTO  : Ethayarajh et al. 2023 — https://arxiv.org/abs/2402.01306
-P²O  : (proposed)
-PKTO : (proposed, this work)
 """
 
 from __future__ import annotations
@@ -21,8 +13,8 @@ from typing import Dict, Tuple
 import torch
 import torch.nn.functional as F
 
-
 # Core log-prob computation.
+
 
 def compute_response_logprobs(
     model,
@@ -42,9 +34,9 @@ def compute_response_logprobs(
                     → proximal ratio   ρ = exp(mean_lp_θ − mean_lp_old)
     """
     out = model(input_ids=input_ids, attention_mask=attention_mask)
-    lp_all = F.log_softmax(out.logits, dim=-1)          # (B, L, V)
-    shift_lp = lp_all[:, :-1, :]                           # (B, L-1, V)
-    targets = input_ids[:, 1:]                            # (B, L-1)
+    lp_all = F.log_softmax(out.logits, dim=-1)  # (B, L, V)
+    shift_lp = lp_all[:, :-1, :]  # (B, L-1, V)
+    targets = input_ids[:, 1:]  # (B, L-1)
     tok_lp = shift_lp.gather(-1, targets.unsqueeze(-1)).squeeze(-1)  # (B, L-1)
 
     B, Lm1 = tok_lp.shape
@@ -96,6 +88,7 @@ def _base_metrics(h_c: torch.Tensor, h_r: torch.Tensor) -> Dict:
 
 # DPO.
 
+
 def dpo_loss(policy, ref_model, batch, device, beta: float):
     """
     Direct Preference Optimisation (Rafailov et al. 2023).
@@ -103,7 +96,9 @@ def dpo_loss(policy, ref_model, batch, device, beta: float):
     L = -E[ log σ(β·(h⁺ − h⁻)) ]
     where  h = β·log(π_θ / π_ref)  is the implicit reward.
     """
-    s_pi_c, s_pi_r, s_rf_c, s_rf_r, _, _ = _get_logprobs(policy, ref_model, batch, device)
+    s_pi_c, s_pi_r, s_rf_c, s_rf_r, _, _ = _get_logprobs(
+        policy, ref_model, batch, device
+    )
     h_c = beta * (s_pi_c - s_rf_c)
     h_r = beta * (s_pi_r - s_rf_r)
     loss = -F.logsigmoid(h_c - h_r).mean()
@@ -114,6 +109,7 @@ def dpo_loss(policy, ref_model, batch, device, beta: float):
 
 # IPO.
 
+
 def ipo_loss(policy, ref_model, batch, device, beta: float, tau: float):
     """
     Identity Preference Optimisation (Azar et al. 2023).
@@ -123,7 +119,9 @@ def ipo_loss(policy, ref_model, batch, device, beta: float, tau: float):
     Replaces the log-sigmoid with a squared loss targeting a fixed margin,
     reducing susceptibility to unbounded reward growth.
     """
-    s_pi_c, s_pi_r, s_rf_c, s_rf_r, _, _ = _get_logprobs(policy, ref_model, batch, device)
+    s_pi_c, s_pi_r, s_rf_c, s_rf_r, _, _ = _get_logprobs(
+        policy, ref_model, batch, device
+    )
     h_c = beta * (s_pi_c - s_rf_c)
     h_r = beta * (s_pi_r - s_rf_r)
     loss = (((h_c - h_r) / beta - 1.0 / (2.0 * tau)) ** 2).mean()
@@ -133,6 +131,7 @@ def ipo_loss(policy, ref_model, batch, device, beta: float, tau: float):
 
 
 # KTO.
+
 
 def kto_loss(policy, ref_model, batch, device, beta: float, lam_d: float, lam_u: float):
     """
@@ -161,6 +160,7 @@ def kto_loss(policy, ref_model, batch, device, beta: float, lam_d: float, lam_u:
 
 
 # P²O.
+
 
 def p2o_loss(
     policy,
@@ -206,7 +206,7 @@ def p2o_loss(
     rho_c_clip = rho_c.clamp(1 - eps, 1 + eps)
     rho_r_clip = rho_r.clamp(1 - eps, 1 + eps)
 
-    d_raw  = rho_c * h_c - rho_r * h_r
+    d_raw = rho_c * h_c - rho_r * h_r
     d_clip = rho_c_clip * h_c - rho_r_clip * h_r
     loss_p = -F.logsigmoid(torch.min(d_raw, d_clip)).mean()
     loss_kl = lam * (m_pi_c - m_rf_c).mean().clamp(min=0.0)
@@ -229,6 +229,7 @@ def p2o_loss(
 
 
 # PKTO.
+
 
 def pkto_loss(
     policy,
@@ -273,8 +274,8 @@ def pkto_loss(
     z_ref = (m_pi_c - m_rf_c).mean().detach().clamp(min=0.0)
 
     # KTO utility margins
-    u_c = h_c - z_ref   # desirable:   chosen above baseline
-    u_r = z_ref - h_r   # undesirable: rejected below baseline
+    u_c = h_c - z_ref  # desirable:   chosen above baseline
+    u_r = z_ref - h_r  # undesirable: rejected below baseline
 
     # Proximal ratios (same mechanism as P²O)
     _, m_pi_r = compute_response_logprobs(
@@ -290,10 +291,10 @@ def pkto_loss(
     rho_c_clip = rho_c.clamp(1 - eps, 1 + eps)
     rho_r_clip = rho_r.clamp(1 - eps, 1 + eps)
 
-    d_raw  = lam_d * rho_c * u_c - lam_u * rho_r * u_r
+    d_raw = lam_d * rho_c * u_c - lam_u * rho_r * u_r
     d_clip = lam_d * rho_c_clip * u_c - lam_u * rho_r_clip * u_r
-    loss_p  = -F.logsigmoid(torch.min(d_raw, d_clip)).mean()
-    loss_kl =  lam * (m_pi_c - m_rf_c).mean().clamp(min=0.0)
+    loss_p = -F.logsigmoid(torch.min(d_raw, d_clip)).mean()
+    loss_kl = lam * (m_pi_c - m_rf_c).mean().clamp(min=0.0)
     loss = loss_p + loss_kl
 
     with torch.no_grad():
@@ -315,11 +316,11 @@ def pkto_loss(
 
 # Evaluator.
 
+
 @torch.no_grad()
 def evaluate(policy, ref_model, loader, device, beta: float) -> Dict:
     """
     Compute reward_accuracy, reward_margin, and token-mean KL over *loader*.
-
     Safe against empty loaders (returns zeros with a warning).
     """
     policy.eval()
@@ -335,20 +336,32 @@ def evaluate(policy, ref_model, loader, device, beta: float) -> Dict:
             continue
 
         s_pi_c, m_pi_c = compute_response_logprobs(
-            policy, c_ids, c_mask,
-            batch["c_response_start"], batch["c_n_resp"],
+            policy,
+            c_ids,
+            c_mask,
+            batch["c_response_start"],
+            batch["c_n_resp"],
         )
         s_pi_r, _ = compute_response_logprobs(
-            policy, r_ids, r_mask,
-            batch["r_response_start"], batch["r_n_resp"],
+            policy,
+            r_ids,
+            r_mask,
+            batch["r_response_start"],
+            batch["r_n_resp"],
         )
         s_rf_c, m_rf_c = compute_response_logprobs(
-            ref_model, c_ids, c_mask,
-            batch["c_response_start"], batch["c_n_resp"],
+            ref_model,
+            c_ids,
+            c_mask,
+            batch["c_response_start"],
+            batch["c_n_resp"],
         )
         s_rf_r, _ = compute_response_logprobs(
-            ref_model, r_ids, r_mask,
-            batch["r_response_start"], batch["r_n_resp"],
+            ref_model,
+            r_ids,
+            r_mask,
+            batch["r_response_start"],
+            batch["r_n_resp"],
         )
 
         h_c = beta * (s_pi_c - s_rf_c)

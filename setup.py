@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="p2o",
     version="0.1.0",
-    description="Proximal Preference Optimisation — comparing DPO, IPO, KTO, P²O, PKTO on GPT-2",
+    description="Proximal Preference Optimisation — comparing DPO, IPO, KTO, P²O, PKTO on GPT-2, GPT-2-medium, and Llama-3.2 (1B)",
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[

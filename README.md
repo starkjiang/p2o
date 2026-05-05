@@ -1,6 +1,6 @@
-# P²O — Proximal Preference Optimisation
+# Proximal Preference Optimization: A Unified Framework for Stable and Reward-Free Alignment
 
-Benchmarking five offline preference-optimisation algorithms on GPT-2 (117M) across three human-feedback datasets.
+Benchmarking five offline preference-optimisation algorithms on GPT-2 (117M), GPT-2-medium (355M), and Llama-3.2 (1B) across three human-feedback datasets.
 
 | Method | Paper | Trust region | Loss shape |
 |--------|-------|:---:|---|
@@ -27,7 +27,7 @@ a per-batch policy snapshot, and `Δh = h⁺ − h⁻` is the implicit reward ma
 p2o/
 ├── p2o/
 │   ├── config.py     # Config dataclass — all hyperparameters
-│   ├── data.py       # Dataset loaders (HH-RLHF, SHP, UltraFeedback)
+│   ├── data.py       # Dataset loaders (HH-RLHF, UltraFeedback, Orca DPO)
 │   ├── losses.py     # DPO / IPO / KTO / P²O / PKTO losses + evaluate()
 │   ├── trainer.py    # Training loop (sequential per-dataset)
 │   └── plot.py       # Publication-quality figures and result tables
@@ -46,7 +46,7 @@ p2o/
 ### 1. Install
 
 ```bash
-git clone https://github.com/starkjiang/p2o.git
+git clone root-repo
 cd p2o
 pip install -e .
 # or: pip install -r requirements.txt
@@ -87,17 +87,17 @@ python scripts/plot_results.py outputs/results.json
 ## Datasets
 
 Each method trains on three datasets **sequentially** within every epoch
-(HH-RLHF → SHP → UltraFeedback). Batches are never mixed across datasets.
+(HH-RLHF → UltraFeedback → Orca DPO). Batches are never mixed across datasets.
 Evaluation is always on separate held-out splits.
 
 | Split | Dataset | Pairs | Role |
 |-------|---------|------:|------|
 | Train-A | `Anthropic/hh-rlhf` | 400 | 1st each epoch |
-| Train-B | `stanfordnlp/SHP` | 400 | 2nd each epoch |
-| Train-C | `openbmb/UltraFeedback` | 400 | 3rd each epoch |
+| Train-B | `openbmb/UltraFeedback` | 400 | 2nd each epoch |
+| Train-C | `Intel/orca_dpo_pairs` | 400 | 3rd each epoch |
 | Eval-A | `Anthropic/hh-rlhf` | 100 | held-out |
-| Eval-B | `stanfordnlp/SHP` | 100 | held-out |
-| Eval-C | `openbmb/UltraFeedback` | 100 | held-out |
+| Eval-B | `openbmb/UltraFeedback` | 100 | held-out |
+| Eval-C | `Intel/orca_dpo_pairs` | 100 | held-out |
 
 ---
 

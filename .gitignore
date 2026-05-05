@@ -9,11 +9,14 @@ build/
 outputs/
 *.png
 *.json
-*.sh
+# *.sh
 # env
 .env
 .venv/
 env/
+*.yml
+out_gpt2/
+out_llama3/
 
 # Jupyter
 .ipynb_checkpoints/
