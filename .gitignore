@@ -4,12 +4,12 @@ __pycache__/
 dist/
 build/
 .eggs/
-
+*.ipynb
 # outputs
 outputs/
 *.png
 *.json
-
+*.sh
 # env
 .env
 .venv/

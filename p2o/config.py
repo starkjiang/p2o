@@ -25,6 +25,10 @@ class Config:
     n_train_per_ds: int = 400 # training pairs drawn from each dataset
     n_eval_per_ds: int = 100 # eval pairs per dataset (held-out)
 
+    dataset_orca: str = "Intel/orca_dpo_pairs"
+    dataset_pku: str = "PKU-Alignment/PKU-SafeRLHF"
+    dataset_ufb: str = "argilla/ultrafeedback-binarized-preferences"
+
     # Shared optimization hyperparameters.
     beta: float = 0.5 # implicit-reward temperature, which is KEY
     lr: float = 2e-5

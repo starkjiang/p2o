@@ -1,45 +1,48 @@
 #!/usr/bin/env python3
 """
 scripts/train.py — Run preference-optimisation experiments from the command line.
-
-Basic usage (train all five methods with defaults):
+ 
+Basic usage (train all five methods on default datasets):
     python scripts/train.py
-
+ 
 Train a single method:
     python scripts/train.py --methods p2o
-
+ 
+Choose datasets:
+    python scripts/train.py --datasets hh shp uf orca pku ufb
+ 
 Override any Config field:
     python scripts/train.py --methods dpo p2o --n_train_per_ds 200 --n_epochs 3
-
+ 
 All results, plots, and a results.json are written to --output_dir (default ./outputs).
 """
-
+ 
 from __future__ import annotations
-
+ 
 import argparse
 import json
 import os
 import sys
 import warnings
-
+ 
 # Allow `python scripts/train.py` from repo root without installing the package
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+ 
 import numpy as np
 import torch
 import warnings
 warnings.filterwarnings("ignore")
-
+ 
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
+ 
 from p2o.config import Config
-from p2o.data import build_loaders
+from p2o.data import build_loaders, VALID_DATASETS
 from p2o.trainer import train_model, VALID_METHODS
 from p2o.plot import plot_training_curves, plot_final_bars, print_result_tables
-
-
+ 
+ 
 # CLI.
-
+ 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="P²O vs DPO/IPO/KTO/PKTO — preference optimisation benchmark",
@@ -50,7 +53,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=VALID_METHODS,
         help="Which methods to run (space-separated).",
     )
-
+    p.add_argument(
+        "--datasets", nargs="+", default=list(VALID_DATASETS),
+        choices=VALID_DATASETS,
+        help="Which datasets to use for training and eval (space-separated).",
+    )
+ 
     # Every Config field can be overridden from the CLI
     cfg_defaults = Config()
     for field_name, field in Config.__dataclass_fields__.items():
@@ -58,14 +66,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ftype = type(default) if default is not None else str
         p.add_argument(f"--{field_name}", type=ftype, default=default,
                        help=f"Config.{field_name}")
-
+ 
     p.add_argument("--no_plots", action="store_true",
                    help="Skip matplotlib figures (useful on headless servers).")
     return p
-
-
+ 
+ 
 # Serialisation helper.
-
+ 
 def _ser(obj):
     if isinstance(obj, dict):
         return {k: _ser(v) for k, v in obj.items()}
@@ -75,25 +83,25 @@ def _ser(obj):
         return float(obj)
     except (TypeError, ValueError):
         return obj
-
-
+ 
+ 
 # Main.
-
+ 
 def main() -> None:
-    args = parser = _build_parser().parse_args()
-
+    args = _build_parser().parse_args()
+ 
     # Build Config from parsed args (drop the non-Config arguments)
     cfg_kwargs = {
         f: getattr(args, f)
         for f in Config.__dataclass_fields__
     }
     cfg = Config(**cfg_kwargs)
-
+ 
     # Reproducibility
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.backends.cuda.matmul.allow_tf32 = True
-
+ 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nDevice : {device}")
     if device.type == "cuda":
@@ -101,54 +109,47 @@ def main() -> None:
         print(f" VRAM:{torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     if device.type == "cuda":
         torch.cuda.manual_seed_all(cfg.seed)
-
+ 
     methods = args.methods
-    print(f"\nMethods: {methods}")
+    dataset_names = args.datasets
+    print(f"\nMethods : {methods}")
+    print(f"Datasets: {dataset_names}")
     print(f"Config: n_train={cfg.n_train_per_ds}/ds  n_eval={cfg.n_eval_per_ds}/ds  "
           f"epochs={cfg.n_epochs}  bs={cfg.batch_size}")
     print(f"β={cfg.beta}  ε={cfg.eps_clip}  λ={cfg.lam_kl}  K={cfg.K_proximal}")
-
+ 
     # Load tokenizer and frozen reference model.
     print(f"\nLoading tokenizer and frozen reference model ({cfg.model_name})...")
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
     tokenizer.pad_token    = tokenizer.eos_token
     tokenizer.padding_side = "left"
-
+ 
     ref_model = AutoModelForCausalLM.from_pretrained(cfg.model_name)
     ref_model.eval().to(device)
     for p in ref_model.parameters():
         p.requires_grad_(False)
     n_params = sum(p.numel() for p in ref_model.parameters())
     print(f"Params: {n_params:,} ({n_params / 1e6:.0f}M)")
-
+ 
     # Load datasets.
-    (
-        train_loader_hh, train_loader_shp, train_loader_uf,
-        eval_loader_hh,  eval_loader_shp,  eval_loader_uf,
-    ) = build_loaders(cfg, tokenizer)
-
-    batches_ds = min(
-        len(train_loader_hh),
-        len(train_loader_shp),
-        len(train_loader_uf),
-    )
-    batches_ep = batches_ds * 3
-    print(f"\nBatches: {batches_ds}/ds × 3 datasets × {cfg.n_epochs} epochs "
+    loaders = build_loaders(cfg, tokenizer, dataset_names)
+ 
+    # Compute batches info for display and plotting.
+    train_loaders = {k: v[0] for k, v in loaders.items()}
+    batches_ds = min(len(tl) for tl in train_loaders.values())
+    n_ds = len(dataset_names)
+    batches_ep = batches_ds * n_ds
+    print(f"\nBatches: {batches_ds}/ds × {n_ds} datasets × {cfg.n_epochs} epochs "
           f"= {batches_ep * cfg.n_epochs} total per method")
-
+ 
     # Train all methods.
     histories: dict = {}
     for method in methods:
-        hist = train_model(
-            method, ref_model,
-            train_loader_hh, train_loader_shp, train_loader_uf,
-            eval_loader_hh,  eval_loader_shp,  eval_loader_uf,
-            cfg, device,
-        )
+        hist = train_model(method, ref_model, loaders, cfg, device)
         # Map internal keys ("dpo") to display labels ("DPO") for plots
         label = "P²O" if method == "p2o" else method.upper()
         histories[label] = hist
-
+ 
     # Verify x-axis alignment.
     if len(histories) > 1:
         ref_bx  = next(iter(histories.values()))["batch_x"]
@@ -162,28 +163,54 @@ def main() -> None:
             print(f"  {marker}  {name}  "
                   f"train={len(h['batch_x'])} eval={len(h['eval_batch_x'])} match={ok}")
         print("Checked! All x-axes identical" if all_ok else "X x-axis mismatch — check dataset loading")
-
+ 
     # Print tables.
     print_result_tables(histories)
-
+ 
     # Save results.json.
-    out = dict(
+    def _build_result(h):
+        r = {}
+        for ds in dataset_names:
+            key = f"final_{ds}"
+            if key in h:
+                r[ds] = _ser(h[key])
+        r["training_time_min"] = h["training_time"] / 60
+        return r
+ 
+    import datetime
+    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+ 
+    run_entry = dict(
+        run_id=run_id,
+        timestamp=datetime.datetime.now().isoformat(),
         config=cfg.to_dict(),
-        results={
-            name: dict(
-                hh_rlhf=_ser(h["final_hh"]),
-                shp=_ser(h["final_shp"]),
-                ultrafeedback=_ser(h["final_uf"]),
-                training_time_min=h["training_time"] / 60,
-            )
-            for name, h in histories.items()
-        },
+        methods=methods,
+        datasets=dataset_names,
+        results={name: _build_result(h) for name, h in histories.items()},
     )
+ 
     json_path = os.path.join(cfg.output_dir, "results.json")
+ 
+    # Load existing runs if the file exists.
+    all_runs = []
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r") as f:
+                existing = json.load(f)
+            # Handle both old format (single dict) and new format (list of runs)
+            if isinstance(existing, list):
+                all_runs = existing
+            elif isinstance(existing, dict):
+                all_runs = [existing]  # wrap old single-run format
+        except (json.JSONDecodeError, ValueError):
+            pass  # corrupted file — start fresh
+ 
+    all_runs.append(run_entry)
+ 
     with open(json_path, "w") as f:
-        json.dump(out, f, indent=2)
-    print(f"\nResults saved → {json_path}")
-
+        json.dump(all_runs, f, indent=2)
+    print(f"\nResults saved → {json_path}  (run {run_id}, {len(all_runs)} total runs)")
+ 
     # Plots.
     if not args.no_plots:
         plot_training_curves(
@@ -194,9 +221,9 @@ def main() -> None:
             histories, cfg,
             save_path=os.path.join(cfg.output_dir, "final_bars.png"),
         )
-
+ 
     print(f"\nAll outputs in: {cfg.output_dir}/")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
