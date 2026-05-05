@@ -7,8 +7,8 @@ build/
 *.ipynb
 # outputs
 outputs/
-# *.png
-# *.json
+*.png
+*.json
 *.sh
 # env
 .env
